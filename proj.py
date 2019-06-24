@@ -91,9 +91,10 @@ def rename(hair_type, directory): #segmented=False, test=False):
 
 
 # reorder into reorder_vector = [8 7 4 1 2 3 6 9];
-def reorder(ls, order=[8, 7, 4, 1, 2, 3, 6, 9]):
+def reorder(ls, order=[8, 7, 4, 1, 5, 2, 3, 6, 9]):
     store = [el for el in ls]
     for i in range(len(ls)):
+        print(i, ls, order[i]-1)
         store[i] = ls[order[i]-1]# -1 due to matlab index
 
     return store
@@ -114,6 +115,7 @@ class LocalBinaryPatterns:
         # to build the histogram of patterns
         lbp = feature.local_binary_pattern(image, self.numPoints,
                                            self.radius, method="uniform")
+        print(lbp)
         (hist, _) = np.histogram(lbp.ravel(),
                                  bins=np.arange(0, self.numPoints + 3),
                                  range=(0, self.numPoints + 2))
@@ -145,72 +147,72 @@ def foo(a, high, low, cltr='out'):
         else:
             return 0
 
-# def out_part(ls, high, low):
-#     ret = []
-#     for num in ls:
-#         if num < low:
-#             ret.append(-1)
-#         elif num > high:
-#             ret.append(1)
-#         else:
-#             ret.append(0)
-#     return ret
-#
-# def upper_part(ls):
-#     ret = []
-#     for num in ls:
-#         if num == -1:
-#             ret.append(0)
-#         else:
-#             ret.append(num)
-#     return ret
-#
-# def lower_part(ls):
-#     ret = []
-#     for num in ls:
-#         if num == -1:
-#             ret.append(1)
-#         else:
-#             ret.append(0)
-#
-#     return ret
+def num(ls):
+    bin = ""
+    for idx, el in enumerate(ls):
+        if idx == 4:
+            continue
+        s = str(el)
+        if s != '0' and s != '1':
+            return -1
+        bin += s
+    return int(bin, 2)
 
 class LocalTernaryPatterns:
-    def __init__(self, numPoints=24, radius=8, threshold=2):
+    def __init__(self, numPoints, radius, threshold=2):
         # store the number of points and radius
         self.numPoints = numPoints
         self.radius = radius
         self.threshold = threshold
 
     def describe(self, image, eps=1e-7):
-        ltp_upper = []
-        ltp_lower = []
-        rows = 80
-        cols = 80
+        rows = len(image)
+        cols = len(image[0])
+        upper_mat_ltp = np.zeros((rows, cols))
+        lower_mat_ltp = np.zeros((rows, cols))
         im = cv2.copyMakeBorder(image,1,1,1,1,cv2.BORDER_REFLECT)
         #eng = matlab.engine.start_matlab()
         #ltp_upper, ltp_lower = eng.LTP(image, 100)
-        pixels = []
+        print(len(im), len(im[0]))
         vfunc = np.vectorize(foo)
         for row in range(1, rows+1):
             for col in range(1, cols+1):
                 cent = im[row][col]
+                pixels = []
                 for i in range(row-1, row+2):
-                    for j in range(col-1, col+1+1):
+                    for j in range(col-1, col+2):
                         pixels.append(im[i][j])
                     #pixels.append(im[i][col-1:col+1+1])
                 # say pixels = [-3,-2,3,2,1,2,4,3,4]
-                # print(pixels)
+                print("Center: {}, Pixels: {}".format((row, col), pixels))
                 low = cent - self.threshold # 1-2 = -1
                 high = cent + self.threshold # 1+2 = 3
                 out_ltp = vfunc(pixels, high, low) # [-1,3]-> [-1, -1, 0, 0, 0, 0, 1, 0, 1]
 
-                upper_ltp = vfunc(pixels, 1, -1, "up")
+                upper_ltp = vfunc(out_ltp, 1, -1, "up")
                 upper_ltp = reorder(upper_ltp)
+                print (upper_ltp)
+                upper_ltp = num(upper_ltp) # convert to dec representation
+                upper_mat_ltp[row-1][col-1] = upper_ltp
 
-                lower_ltp = vfunc(pixels, 1, -1, "low")
+                lower_ltp = vfunc(out_ltp, 1, -1, "low")
                 lower_ltp = reorder(lower_ltp)
+                lower_ltp = num(lower_ltp)
+                lower_mat_ltp[row-1][col-1] = lower_ltp
+        (hist_upper, _) = np.histogram(upper_mat_ltp.ravel(),
+                                 bins=np.arange(0, self.numPoints + 3),
+                                 range=(0, self.numPoints + 2))
+        # normalize the histogram
+        hist_upper = hist_upper.astype("float")
+        hist_upper /= (hist_upper.sum() + eps)
 
+        (hist_lower, _) = np.histogram(lower_mat_ltp.ravel(),
+                                 bins=np.arange(0, self.numPoints + 3),
+                                 range=(0, self.numPoints + 2))
+        hist_lower = hist_lower.astype("float")
+        hist_lower /= (hist_lower.sum() + eps)
+        # return the histogram of Local Binary Patterns
+        return hist_upper + hist_lower
 # tensors= tuples in this case, (img, hair_type) high dimensional records returned by this function
 def form_tensor(path, label=""):
     ret = []
@@ -236,9 +238,10 @@ lbp_desc = LocalBinaryPatterns(24, 8)
 ltp_desc = LocalTernaryPatterns(24, 8)
 
 FEATURE = ""
-def train(path, learning_rate, feature='lbp'):
+def train(path, learning_rate, batch_size = 20, feature='lbp'):
     # tensors = image, hair_type,
-    global FEATURE = feature
+    global FEATURE
+    FEATURE = feature
     ls = []
 
     path_3c = os.path.join(path, "train", "3c", "3c-unsegmented")
@@ -253,21 +256,21 @@ def train(path, learning_rate, feature='lbp'):
 
     ls = shuffle(ls)
     l = len(ls)
+    model = LinearSVC(C=learning_rate, random_state=42)
 
     data = []
     labels = []
 
     if feature.lower().strip() == 'lbp':
         desc = lbp_desc
-    else
+    else:
         desc = ltp_desc
-
-    for i in range(l):
-        hist = desc.describe(ls[i][0])
-        labels.append(ls[i][1])
-        data.append(hist)
-    model = LinearSVC(C=learning_rate, random_state=42)
-    model.fit(data, labels)
+    for outer in range(int(l/batch_size)):
+        for i in range(batch_size):
+            hist = desc.describe(ls[outer * batch_size + i][0])
+            data.append(hist)
+            labels.append(ls[i][1])
+        model.fit(data, labels)
     dump(model, 'model.joblib')
     return model
 
@@ -287,23 +290,31 @@ def test(path):
     ys_pred = []
     ys_true = []
 
-    if FEATURE = 'lbp':
+    if FEATURE == 'lbp':
         desc = lbp_desc
     else:
         desc = ltp_desc
-
+    tp = 0
+    fp = 0
+    fn = 0
     for img in ls:
         hist = desc.describe(img[0])
         prediction = model.predict(hist.reshape(1, -1))
         ys_pred.append(prediction)
         ys_true.append(img[1])
+        if prediction == img[1]:
+            tp += 1
+            correct += 1
+        # if
+    print("Accuracy = ", correct / len(ls) * 100)
     #precision, recall, accuracy = metrics(ys_true, ys_pred)
     #print("\n\nMetrics:\nPrecision: {0}\nRecall: {1}\nAccuracy: {2}".format(precision, recall, accuracy))
 
 if __name__ == '__main__':
     # plotting2(DATAPATH, 20, "4a", segmented=True)
     # rename("4c", dir="test/4c")
-    model = train(DATAPATH, learning_rate = 333, 'ltp')
+    model = train(DATAPATH, 1000, 20, 'lbp')
     test("/Users/prajjwaldangal/Documents/cs/summer2018/algo/proj/data/test")
     # rename("3c", dir="train/3c/3c-unsegmented")
     # train(DATAPATH)
+# 1 / sqrt(n)
